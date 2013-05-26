@@ -9,9 +9,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx.h"
 #include "stm32f4xx_conf.h"
-#include "5110.h"
 #include "main.h"
-#include "ascii.h"
+#include "GLCD.h"
 
 /* Private typedef -----------------------------------------------------------*/
 GPIO_InitTypeDef GPIO_InitStructure;
@@ -24,14 +23,9 @@ char* frequency[5];
 /* Private function prototypes -----------------------------------------------*/
 void Delay(volatile uint32_t nCount);
 void TimingDelay_Decrement(void);
-void Animate();
-void Animate2();
+void TestScroll();
+void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v);
 
-/**
- * @brief  Nokia 5110 LCD demo
- * @param  None
- * @retval None
- */
 int main(void) {
 
 	/* Set Systick to 1 ms */
@@ -44,38 +38,119 @@ int main(void) {
 	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
 	NVIC_Init(&NVIC_InitStructure);
 
-	/* GPIOA Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
-
-	/* Configure PA1 as output pushpull mode */
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1;
+	/* GPIOH Periph clock enable */
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOH, ENABLE);
+	/* Configure PH2 as output pushpull mode */
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
-	GPIO_Init(GPIOA, &GPIO_InitStructure);
+	GPIO_Init(GPIOH, &GPIO_InitStructure);
 
-	/* Init LCD */
-	LCD5110_init();
-	LCD5110_Led(0);
+	Delay(500);
+	LCD_Initialization();
+	LCD_SetBacklight(0x80);
+	LCD_Clear(Black);
+	GUI_Text(10, 10, "      3.5 TFT LCD with SSD1963\0", White, Black);
+	//GUI_Text(10, 26, "3.5 TFT LCD with SSD1963\0", White, Black);
 
-	/* Display sample text */
-	LCD5110_set_XY(0, 0);
-	LCD5110_write_string("Core 407 12/04");
-	LCD5110_write_string("              ");
-	LCD5110_write_string("Nokia 5110 LCD");
-	LCD5110_write_string("              ");
-	getDecimalFromShort((char*) frequency, (u16) (SystemCoreClock / 1000000));
-	LCD5110_write_string(" ");
-	LCD5110_write_string((char*) frequency);
-	LCD5110_write_string(" Mhz    ");
+	//TestScroll();
+	TestFill();
 
-	/* Start animation bar */
 	while (1) {
-		Animate2();
+		Delay(500);
+		GPIO_ToggleBits(GPIOH, GPIO_Pin_2);
 	}
 }
 
+void TestFill() {
+	uint16_t index = 0;
+	float red;
+	float green;
+	float blue;
+	float hue;
+	float sat = 1;
+	float val = 0.8;
+
+	while (1) {
+
+		if (index == 360) {
+			index = 0;
+		}
+		/* Wait VSync period */
+		while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+		}
+		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+
+		HSVtoRGB(&red, &green, &blue, (float) index, sat, val);
+
+		LCD_FillArea(0, 41, 319, 239,
+				RGB565CONVERT((uint8_t)(red*255+0.5) ,(uint8_t)(green*255+0.5) ,(uint8_t)(blue*255+0.5) ));
+//		LCD_FillArea(0, 61, 319, 80,
+//				RGB565CONVERT(0x00+index,0xFF+index,0x00+index));
+//		LCD_FillArea(0, 81, 319, 100,
+//				RGB565CONVERT(0x00+index,0x00+index,0xFF+index));
+//		LCD_FillArea(0, 101, 319, 120,
+//				RGB565CONVERT(0xFF+index,0xFF+index,0x00+index));
+//		LCD_FillArea(0, 121, 319, 140,
+//				RGB565CONVERT(0xFF+index,0x00+index,0xFF+index));
+//		LCD_FillArea(0, 141, 319, 160,
+//				RGB565CONVERT(0x00+index,0xFF+index,0xFF+index));
+//		LCD_FillArea(0, 161, 319, 180,
+//				RGB565CONVERT(0xFF+index,0xFF+index,0xFF+index));
+//		LCD_FillArea(0, 181, 319, 200,
+//				RGB565CONVERT(0xFF+index,0xD0+index,0x80+index));
+//		LCD_FillArea(0, 201, 319, 220,
+//				RGB565CONVERT(0x80+index,0xD0+index,0xFF+index));
+//		LCD_FillArea(0, 221, 319, 240,
+//				RGB565CONVERT(0xD0+index,0xFF+index,0x80+index));
+
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+
+		/* Wait end of Vsync */
+		if (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+			while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+			}
+		}
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		index++;
+	}
+}
+
+void TestScroll() {
+	uint16_t index;
+	uint8_t line;
+	uint16_t col = 0x1F;
+	uint16_t last = 0;
+#define step 2
+	while (1) {
+		for (index = 27; index < 236; index = index + step) {
+			while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+			}
+			GPIO_SetBits(GPIOC, GPIO_Pin_3);
+			if (index == 27) {
+				last = 235;
+			} else {
+				last = index - step;
+			}
+			LCD_FillArea(0, last, 319, last + 4, Black);
+			for (line = 0; line < 5; line++) {
+				LCD_FillArea(0, index + line, 319, index + line,
+						col + line * 8 << 5);
+			}
+			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+			GPIO_SetBits(GPIOC, GPIO_Pin_3);
+			while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+			}
+			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		}
+	}
+}
 /**
  * @brief  This function handles SysTick Handler.
  * @param  None
@@ -107,59 +182,52 @@ void TimingDelay_Decrement(void) {
 	}
 }
 
-void Animate() {
-	u8 i = 0;
-	u8 j = 0;
-	u8 val = 0;
-	for (i = 3; i < 8; i++) {
-		val = 0x01 << i;
-		Delay(150);
-		for (j = 0; j < 84; j++) {
-			LCD5110_set_pos(j, 5);
-			LCD5110_write_byte(val);
-		}
+void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v) {
+	int i;
+	float f, p, q, t;
+	if (s == 0) {
+		// achromatic (grey)
+		*r = *g = *b = v;
+		return;
 	}
-	for (i = 6; i > 0; i--) {
-		val = 0x01 << i;
-		Delay(150);
-		for (j = 0; j < 84; j++) {
-			LCD5110_set_pos(j, 5);
-			LCD5110_write_byte(val);
-		}
-	}
-	for (i = 0; i < 4; i++) {
-		val = 0x01 << i;
-		Delay(150);
-		for (j = 0; j < 84; j++) {
-			LCD5110_set_pos(j, 5);
-			LCD5110_write_byte(val);
-		}
+	h /= 60; // sector 0 to 5
+	i = floor(h);
+	f = h - i; // factorial part of h
+	p = v * (1 - s);
+	q = v * (1 - s * f);
+	t = v * (1 - s * (1 - f));
+	switch (i) {
+	case 0:
+		*r = v;
+		*g = t;
+		*b = p;
+		break;
+	case 1:
+		*r = q;
+		*g = v;
+		*b = p;
+		break;
+	case 2:
+		*r = p;
+		*g = v;
+		*b = t;
+		break;
+	case 3:
+		*r = p;
+		*g = q;
+		*b = v;
+		break;
+	case 4:
+		*r = t;
+		*g = p;
+		*b = v;
+		break;
+	default: // case 5:
+		*r = v;
+		*g = p;
+		*b = q;
+		break;
 	}
 }
 
-void Animate2() {
-	u8 i = 0;
-	u8 on = 0b11110000;
-	u8 off = 0b00000000;
-	for (i = 0; i < 83; i++) {
-		LCD5110_set_pos(i, 5);
-		LCD5110_write_byte(on);
-		Delay(15);
-	}
-	for (i = 0; i < 83; i++) {
-		LCD5110_set_pos(i, 5);
-		LCD5110_write_byte(off);
-		Delay(15);
-	}
-	for (i = 83; i > 0; i--) {
-		LCD5110_set_pos(i, 5);
-		LCD5110_write_byte(on);
-		Delay(15);
-	}
-	for (i = 83; i > 0; i--) {
-		LCD5110_set_pos(i, 5);
-		LCD5110_write_byte(off);
-		Delay(15);
-	}
-}
 /************************END OF FILE*******************************/
