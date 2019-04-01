@@ -11,3 +11,8 @@ memory.ld
 *Target*
 *.config
 
+cscope.out
+Core407i.elay
+Core407i.ebp
+Core407i.depend
+Core407i.cscope_file_list

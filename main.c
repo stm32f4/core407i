@@ -21,9 +21,10 @@ static volatile uint32_t TimingDelay;
 char* frequency[5];
 
 /* Private function prototypes -----------------------------------------------*/
-void Delay(volatile uint32_t nCount);
+void Delay_ms(volatile uint32_t nCount);
 void TimingDelay_Decrement(void);
 void TestScroll();
+void TestFill();
 void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v);
 
 int main(void) {
@@ -48,28 +49,40 @@ int main(void) {
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
 	GPIO_Init(GPIOH, &GPIO_InitStructure);
 
-	Delay(500);
-	LCD_Initialization();
-	LCD_SetBacklight(0x80);
+	Delay_ms(500);
+	LCD_Init();
+	LCD_SetBacklight(0xA0);
 	LCD_Clear(Black);
-	GUI_Text(10, 10, "      3.5 TFT LCD with SSD1963\0", White, Black);
+
+#define _RED 0xD0
+#define _GREEN 0xC0
+#define _BLUE 0x00
+
+	LCD_FillArea(0, 0, 319, 40, RGB565CONVERT(_RED ,_GREEN ,_BLUE));
+
+	LCD_DrawLine(0, 0, 319, 0, 0xFFFF);
+	LCD_DrawLine(0, 40, 319, 40, 0xFFFF);
+	LCD_DrawLine(0, 0, 0, 40, 0xFFFF);
+	LCD_DrawLine(319, 0, 319, 40, 0xFFFF);
+	GUI_Text(10, 10, "3.5 TFT LCD with SSD1963   R(02/05/14)\0", Black,
+			RGB565CONVERT(_RED ,_GREEN ,_BLUE));
 	//GUI_Text(10, 26, "3.5 TFT LCD with SSD1963\0", White, Black);
 
 	//TestScroll();
 	TestFill();
 
 	while (1) {
-		Delay(500);
+		Delay_ms(500);
 		GPIO_ToggleBits(GPIOH, GPIO_Pin_2);
 	}
 }
 
 void TestFill() {
+	uint8_t count = 0;
 	uint16_t index = 0;
 	float red;
 	float green;
 	float blue;
-	float hue;
 	float sat = 1;
 	float val = 0.8;
 
@@ -106,18 +119,20 @@ void TestFill() {
 //		LCD_FillArea(0, 221, 319, 240,
 //				RGB565CONVERT(0xD0+index,0xFF+index,0x80+index));
 
+//Low pulse when processing is done
 		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+		for (count = 0; count < 255; count++) {
+			RGB565CONVERT((uint8_t)(red*255+0.5), (uint8_t)(green*255+0.5),
+					(uint8_t)(blue*255+0.5));
+		}
 
 		/* Wait end of Vsync */
 		if (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+			GPIO_SetBits(GPIOC, GPIO_Pin_3);
 			while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
 			}
+			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
 		}
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
 		index++;
 	}
 }
@@ -125,29 +140,54 @@ void TestFill() {
 void TestScroll() {
 	uint16_t index;
 	uint8_t line;
-	uint16_t col = 0x1F;
+	uint8_t thick = 16;
+	uint8_t colStep = 128 / thick;
+	uint16_t colR = 0x7F;
+	uint16_t colG = 0x00;
+	uint16_t colB = 0x7F;
 	uint16_t last = 0;
-#define step 2
+	uint16_t step = 1;
+	uint16_t start = 41;
+	uint16_t end = 239 - thick;
+	index = start;
 	while (1) {
-		for (index = 27; index < 236; index = index + step) {
-			while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-			}
-			GPIO_SetBits(GPIOC, GPIO_Pin_3);
-			if (index == 27) {
-				last = 235;
-			} else {
-				last = index - step;
-			}
-			LCD_FillArea(0, last, 319, last + 4, Black);
-			for (line = 0; line < 5; line++) {
-				LCD_FillArea(0, index + line, 319, index + line,
-						col + line * 8 << 5);
-			}
-			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-			GPIO_SetBits(GPIOC, GPIO_Pin_3);
-			while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-			}
-			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+		// Wait if in display period
+		while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+		}
+
+		// Start of non display period
+		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+		if (index == start) {
+			last = end;
+		} else {
+			last = index - step;
+		}
+		LCD_FillArea(0, last, 319, last + thick, Black);
+		for (line = 0; line < thick + 1; line++) {
+			LCD_FillArea(0, index + line, 319, index + line,
+					RGB565CONVERT(colR + line * colStep ,colG + line * colStep ,colB + line * colStep));
+		}
+
+		// End of Data Processing
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+
+		//Add a low pulse at end of processing
+		for (line = 0; line < 255; line++) {
+			RGB565CONVERT(colR + line * colStep, colG + line * colStep,
+					colB + line * colStep);
+		}
+		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+
+		//Wait next display period
+		while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+		}
+
+		// Start of display period
+		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+
+		index += step;
+		if (index == end || index == start) {
+			step = -step;
 		}
 	}
 }
@@ -165,7 +205,7 @@ void SysTick_Handler(void) {
  * @param  nTime: specifies the delay time length, in milliseconds.
  * @retval None
  */
-void Delay(volatile uint32_t nTime) {
+void Delay_ms(volatile uint32_t nTime) {
 	TimingDelay = nTime;
 	while (TimingDelay != 0)
 		;

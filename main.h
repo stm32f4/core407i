@@ -1,1 +1,1 @@
-void Delay(volatile uint32_t nTime);
+void Delay_ms(volatile uint32_t nTime);
