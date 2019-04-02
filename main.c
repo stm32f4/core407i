@@ -11,6 +11,12 @@
 #include "stm32f4xx_conf.h"
 #include "main.h"
 #include "GLCD.h"
+#include "AD7846.h"
+#include "stdio.h"
+
+#define _RED 0xD0
+#define _GREEN 0xC0
+#define _BLUE 0x00
 
 /* Private typedef -----------------------------------------------------------*/
 GPIO_InitTypeDef GPIO_InitStructure;
@@ -19,126 +25,103 @@ NVIC_InitTypeDef NVIC_InitStructure;
 /* Private variables ---------------------------------------------------------*/
 static volatile uint32_t TimingDelay;
 char* frequency[5];
+u8 volatile touchedOn = 0;
+u8 volatile touchedOff = 0;
+u32 msCounter = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 void Delay_ms(volatile uint32_t nCount);
 void TimingDelay_Decrement(void);
 void TestScroll();
-void TestFill();
+void TestFill(uint16_t index);
 void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v);
+void InitSystick();
+void trackTouch(TP_EVENT e);
+void InitTrace();
 
 int main(void) {
 
-	/* Set Systick to 1 ms */
-	if (SysTick_Config(SystemCoreClock / 1000))
-		while (1)
-			;
-	NVIC_InitStructure.NVIC_IRQChannel = SysTick_IRQn;
-	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0x0F;
-	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0x0F;
-	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-	NVIC_Init(&NVIC_InitStructure);
-
-	/* GPIOH Periph clock enable */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOH, ENABLE);
-	/* Configure PH2 as output pushpull mode */
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
-	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
-	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
-	GPIO_Init(GPIOH, &GPIO_InitStructure);
-
+	InitSystick();
+	InitTrace();
 	Delay_ms(500);
 	LCD_Init();
 	LCD_SetBacklight(0xA0);
-	LCD_Clear(Black);
 
-#define _RED 0xD0
-#define _GREEN 0xC0
-#define _BLUE 0x00
-
-	LCD_FillArea(0, 0, 319, 40, RGB565CONVERT(_RED ,_GREEN ,_BLUE));
-
+	LCD_FillArea(0, 0, 319, 40, RGB565CONVERT(_RED, _GREEN, _BLUE));
 	LCD_DrawLine(0, 0, 319, 0, 0xFFFF);
 	LCD_DrawLine(0, 40, 319, 40, 0xFFFF);
 	LCD_DrawLine(0, 0, 0, 40, 0xFFFF);
 	LCD_DrawLine(319, 0, 319, 40, 0xFFFF);
-	GUI_Text(10, 10, "3.5 TFT LCD with SSD1963   R(02/05/14)\0", Black,
-			RGB565CONVERT(_RED ,_GREEN ,_BLUE));
-	//GUI_Text(10, 26, "3.5 TFT LCD with SSD1963\0", White, Black);
+	GUI_Text(10, 10, "3.5 TFT LCD with SSD1963   R(02/05/14)\0", Black, RGB565CONVERT(_RED, _GREEN, _BLUE));
+	LCD_FillArea(0, 41, 319, 239, Black);
+	TC_InitSPI();
+	TC_SetTouchCallBack(trackTouch);
 
-	//TestScroll();
-	TestFill();
+	u8 cnt = 20;
+	GUI_Text(0, 120, "Touch the screen to start calibration.", Black, White);
+	TC_set_interrupt(1);
+	while (cnt > 0) {
+		Delay_ms(100);
+		if (touchedOn == 1) {
+			Delay_ms(200);
+			TS_Calibrate(320, 240);
+			touchedOn = 0;
+			break;
+		}
+		cnt--;
+	}
+	LCD_FillArea(0, 41, 319, 239, Black);
 
+	char Text[15] = "         ";
+	u16 index = 0;
 	while (1) {
-		Delay_ms(500);
-		GPIO_ToggleBits(GPIOH, GPIO_Pin_2);
+		if (touchedOn == 1) {
+			if (Pen_Point.X > 0 && Pen_Point.Y > 0) {
+				LCD_FillArea(0, 0, 319, 239, Black);
+				sprintf(Text, "X : %1d   Y : %1d", Pen_Point.X0, Pen_Point.Y0);
+				GUI_Text(50, 1, Text, White, Black);
+				if (Pen_Point.X0 > 0 && Pen_Point.X0 < 320 && Pen_Point.Y0 > 0 && Pen_Point.Y0 < 240) {
+					LCD_FillArea(Pen_Point.X0 - 5, Pen_Point.Y0 - 5, Pen_Point.X0 + 5, Pen_Point.Y0 + 5, White);
+				} else {
+					LCD_SetPoint(Pen_Point.X0, Pen_Point.Y0, White);
+				}
+			}
+			touchedOn = 0;
+		} else {
+			//TestFill(index);
+			TestScroll();
+			index++;
+			if (index == 360)
+				index = 0;
+		}
 	}
 }
 
-void TestFill() {
-	uint8_t count = 0;
-	uint16_t index = 0;
+void TestFill(uint16_t index) {
 	float red;
 	float green;
 	float blue;
 	float sat = 1;
 	float val = 0.8;
+	uint16_t width = 5;
+	uint16_t start = 0;
 
-	while (1) {
-
-		if (index == 360) {
-			index = 0;
-		}
-		/* Wait VSync period */
-		while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-		}
-		GPIO_SetBits(GPIOC, GPIO_Pin_3);
-
-		HSVtoRGB(&red, &green, &blue, (float) index, sat, val);
-
-		LCD_FillArea(0, 41, 319, 239,
-				RGB565CONVERT((uint8_t)(red*255+0.5) ,(uint8_t)(green*255+0.5) ,(uint8_t)(blue*255+0.5) ));
-//		LCD_FillArea(0, 61, 319, 80,
-//				RGB565CONVERT(0x00+index,0xFF+index,0x00+index));
-//		LCD_FillArea(0, 81, 319, 100,
-//				RGB565CONVERT(0x00+index,0x00+index,0xFF+index));
-//		LCD_FillArea(0, 101, 319, 120,
-//				RGB565CONVERT(0xFF+index,0xFF+index,0x00+index));
-//		LCD_FillArea(0, 121, 319, 140,
-//				RGB565CONVERT(0xFF+index,0x00+index,0xFF+index));
-//		LCD_FillArea(0, 141, 319, 160,
-//				RGB565CONVERT(0x00+index,0xFF+index,0xFF+index));
-//		LCD_FillArea(0, 161, 319, 180,
-//				RGB565CONVERT(0xFF+index,0xFF+index,0xFF+index));
-//		LCD_FillArea(0, 181, 319, 200,
-//				RGB565CONVERT(0xFF+index,0xD0+index,0x80+index));
-//		LCD_FillArea(0, 201, 319, 220,
-//				RGB565CONVERT(0x80+index,0xD0+index,0xFF+index));
-//		LCD_FillArea(0, 221, 319, 240,
-//				RGB565CONVERT(0xD0+index,0xFF+index,0x80+index));
-
-//Low pulse when processing is done
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		for (count = 0; count < 255; count++) {
-			RGB565CONVERT((uint8_t)(red*255+0.5), (uint8_t)(green*255+0.5),
-					(uint8_t)(blue*255+0.5));
-		}
-
-		/* Wait end of Vsync */
-		if (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-			GPIO_SetBits(GPIOC, GPIO_Pin_3);
-			while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-			}
-			GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-		}
-		index++;
+	if (index == 360) {
+		index = 0;
 	}
+	/* Wait VSync period */
+	while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4))
+		;
+
+	HSVtoRGB(&red, &green, &blue, (float) index, sat, val);
+
+	LCD_FillArea(0, start, width, 239,
+			RGB565CONVERT((uint8_t )(red * 255 + 0.5), (uint8_t )(green * 255 + 0.5), (uint8_t )(blue * 255 + 0.5)));
 }
 
 void TestScroll() {
-	uint16_t index;
+	static uint16_t index;
+	static uint16_t step = 1;
 	uint8_t line;
 	uint8_t thick = 16;
 	uint8_t colStep = 128 / thick;
@@ -146,49 +129,37 @@ void TestScroll() {
 	uint16_t colG = 0x00;
 	uint16_t colB = 0x7F;
 	uint16_t last = 0;
-	uint16_t step = 1;
-	uint16_t start = 41;
+	uint16_t start = 0;
+	uint16_t width = 5;
 	uint16_t end = 239 - thick;
-	index = start;
-	while (1) {
-		// Wait if in display period
-		while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-		}
+	// Wait if in display period
+	while (!GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+	}
 
-		// Start of non display period
-		GPIO_SetBits(GPIOC, GPIO_Pin_3);
-		if (index == start) {
-			last = end;
-		} else {
-			last = index - step;
-		}
-		LCD_FillArea(0, last, 319, last + thick, Black);
-		for (line = 0; line < thick + 1; line++) {
-			LCD_FillArea(0, index + line, 319, index + line,
-					RGB565CONVERT(colR + line * colStep ,colG + line * colStep ,colB + line * colStep));
-		}
+	// Start of non display period
+	GPIO_SetBits(GPIOC, GPIO_Pin_3);
+	if (index == start) {
+		last = end;
+	} else {
+		last = index - step;
+	}
+	LCD_FillArea(0, last, width, last + thick, Black);
+	for (line = 0; line < thick + 1; line++) {
+		LCD_FillArea(0, index + line, width, index + line,
+				RGB565CONVERT(colR + line * colStep, colG + line * colStep, colB + line * colStep));
+	}
 
-		// End of Data Processing
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
+	for (line = 0; line < 255; line++) {
+		RGB565CONVERT(colR + line * colStep, colG + line * colStep, colB + line * colStep);
+	}
 
-		//Add a low pulse at end of processing
-		for (line = 0; line < 255; line++) {
-			RGB565CONVERT(colR + line * colStep, colG + line * colStep,
-					colB + line * colStep);
-		}
-		GPIO_SetBits(GPIOC, GPIO_Pin_3);
+	//Wait next display period
+	while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
+	}
 
-		//Wait next display period
-		while (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_4)) {
-		}
-
-		// Start of display period
-		GPIO_ResetBits(GPIOC, GPIO_Pin_3);
-
-		index += step;
-		if (index == end || index == start) {
-			step = -step;
-		}
+	index += step;
+	if (index == end || index == start) {
+		step = -step;
 	}
 }
 /**
@@ -196,10 +167,9 @@ void TestScroll() {
  * @param  None
  * @retval None
  */
-void SysTick_Handler(void) {
-	TimingDelay_Decrement();
-}
-
+//void SysTick_Handler(void) {
+//	TimingDelay_Decrement();
+//}
 /**
  * @brief  Inserts a delay time.
  * @param  nTime: specifies the delay time length, in milliseconds.
@@ -220,6 +190,7 @@ void TimingDelay_Decrement(void) {
 	if (TimingDelay > 0x00) {
 		TimingDelay--;
 	}
+	msCounter++;
 }
 
 void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v) {
@@ -270,4 +241,67 @@ void HSVtoRGB(float *r, float *g, float *b, float h, float s, float v) {
 	}
 }
 
+void trackTouch(TP_EVENT e) {
+	if (e == on) {
+		touchedOn = 1;
+	} else if (e == off) {
+		touchedOff = 1;
+	} else {
+		touchedOn = 0;
+		touchedOff = 0;
+	}
+}
+
+void LCD_DrawCross(u16 X, u16 Y, u8 show) {
+	LCD_Clear(White);
+	if (show == 1) {
+		LCD_DrawLine(X - 3, Y, X + 3, Y, Black);
+		LCD_DrawLine(X, Y - 3, X, Y + 3, Black);
+	}
+	return;
+}
+
+void InitSystick() {
+	/* Set Systick to 1 ms */
+	if (SysTick_Config(SystemCoreClock / 1000))
+		while (1)
+			;
+	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
+
+	NVIC_InitStructure.NVIC_IRQChannel = SysTick_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0x00;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0x00;	// Not used
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
+	//NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
+	NVIC_SetPriorityGrouping(0x03);
+	NVIC_SetPriority(SysTick_IRQn, 0);
+}
+
+u32 getTimeMs() {
+	return msCounter;
+}
+
+void InitTrace() {
+	GPIO_InitTypeDef GPIO_InitStructure;
+
+	// Enable GPIE
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
+	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	GPIO_Init(GPIOE, &GPIO_InitStructure);
+
+	ResetTrace();
+}
+
+void SetTrace() {
+	GPIO_SetBits(GPIOE, GPIO_Pin_3);
+}
+
+void ResetTrace() {
+	GPIO_ResetBits(GPIOE, GPIO_Pin_3);
+}
 /************************END OF FILE*******************************/
